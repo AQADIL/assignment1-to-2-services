@@ -1,0 +1,25 @@
+services:
+  order-service:
+    image: golang:1.22
+    working_dir: /app
+    command: ["sh", "-c", "go mod download && go run ./cmd/main.go"]
+    ports:
+      - "8080:8080"
+    environment:
+      - ORDER_DB=/app/order.db
+      - PAYMENT_URL=http://payment-service:8081
+    volumes:
+      - ./order-service:/app
+    depends_on:
+      - payment-service
+
+  payment-service:
+    image: golang:1.22
+    working_dir: /app
+    command: ["sh", "-c", "go mod download && go run ./cmd/main.go"]
+    ports:
+      - "8081:8081"
+    environment:
+      - PAYMENT_DB=/app/payment.db
+    volumes:
+      - ./payment-service:/app
