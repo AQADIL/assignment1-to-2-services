@@ -47,6 +47,8 @@ type OrderRepository interface {
 	GetByID(ctx context.Context, id string) (Order, error)
 	UpdateStatus(ctx context.Context, id string, status string) error
 	ListByCustomerID(ctx context.Context, customerID string) ([]Order, error)
+	Subscribe(customerID string) (<-chan Order, string)
+	Unsubscribe(subID string)
 }
 
 type IdempotencyRepository interface {

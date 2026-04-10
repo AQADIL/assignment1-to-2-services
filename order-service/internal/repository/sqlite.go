@@ -5,15 +5,24 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"order-service/internal/domain"
 
+	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
 )
 
+type subscriber struct {
+	ch         chan domain.Order
+	customerID string
+}
+
 type SQLiteRepository struct {
-	db *sql.DB
+	db          *sql.DB
+	mu          sync.RWMutex
+	subscribers map[string]*subscriber
 }
 
 func NewSQLiteRepository(dbPath string) (*SQLiteRepository, error) {
@@ -26,7 +35,7 @@ func NewSQLiteRepository(dbPath string) (*SQLiteRepository, error) {
 		return nil, err
 	}
 
-	repo := &SQLiteRepository{db: db}
+	repo := &SQLiteRepository{db: db, subscribers: make(map[string]*subscriber)}
 	if err := repo.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -99,7 +108,45 @@ func (r *SQLiteRepository) UpdateStatus(ctx context.Context, id string, status s
 	if rows == 0 {
 		return domain.ErrOrderNotFound
 	}
+
+	if order, err := r.GetByID(ctx, id); err == nil {
+		r.notify(order)
+	}
 	return nil
+}
+
+func (r *SQLiteRepository) Subscribe(customerID string) (<-chan domain.Order, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	subID := uuid.NewString()
+	ch := make(chan domain.Order, 64)
+	r.subscribers[subID] = &subscriber{ch: ch, customerID: customerID}
+	return ch, subID
+}
+
+func (r *SQLiteRepository) Unsubscribe(subID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if sub, ok := r.subscribers[subID]; ok {
+		close(sub.ch)
+		delete(r.subscribers, subID)
+	}
+}
+
+func (r *SQLiteRepository) notify(order domain.Order) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	for _, sub := range r.subscribers {
+		if sub.customerID == "" || sub.customerID == order.CustomerID {
+			select {
+			case sub.ch <- order:
+			default:
+			}
+		}
+	}
 }
 
 func (r *SQLiteRepository) ListByCustomerID(ctx context.Context, customerID string) ([]domain.Order, error) {
