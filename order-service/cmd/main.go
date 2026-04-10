@@ -21,7 +21,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	dbPath := getenv("ORDER_DB", "./order.db")
-	paymentURL := getenv("PAYMENT_URL", "http://localhost:8081")
+	paymentAddr := getenv("PAYMENT_GRPC_ADDR", "localhost:50051")
 
 	repo, err := repository.NewSQLiteRepository(dbPath)
 	if err != nil {
@@ -32,7 +32,15 @@ func main() {
 		_ = repo.Close()
 	}()
 
-	payCli := paymentclient.New(paymentURL)
+	payCli, err := paymentclient.New(paymentAddr)
+	if err != nil {
+		logger.Error("failed to create payment grpc client", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		_ = payCli.Close()
+	}()
+
 	uc := usecase.NewOrderUseCase(repo, payCli, logger)
 	h := httpdelivery.NewHandler(uc)
 	router := httpdelivery.NewRouter(h, repo, logger)

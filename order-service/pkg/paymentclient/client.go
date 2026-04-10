@@ -1,67 +1,53 @@
 package paymentclient
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"net/http"
-	"strings"
 	"time"
+
+	pb "github.com/AQADIL/assignment2-generated/payment"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"order-service/internal/domain"
 )
 
 type Client struct {
-	baseURL string
-	httpCli *http.Client
+	conn   *grpc.ClientConn
+	client pb.PaymentServiceClient
 }
 
-func New(baseURL string) *Client {
-	baseURL = strings.TrimRight(baseURL, "/")
-	return &Client{
-		baseURL: baseURL,
-		httpCli: &http.Client{Timeout: 2 * time.Second},
+func New(addr string) (*Client, error) {
+	conn, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return nil, err
 	}
+	return &Client{
+		conn:   conn,
+		client: pb.NewPaymentServiceClient(conn),
+	}, nil
+}
+
+func (c *Client) Close() error {
+	return c.conn.Close()
 }
 
 func (c *Client) CreatePayment(ctx context.Context, req domain.PaymentCreateRequest) (domain.PaymentCreateResponse, error) {
-	url := c.baseURL + "/payments"
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 
-	payload, err := json.Marshal(req)
+	resp, err := c.client.ProcessPayment(ctx, &pb.PaymentRequest{
+		OrderId: req.OrderID,
+		Amount:  req.Amount,
+	})
 	if err != nil {
 		return domain.PaymentCreateResponse{}, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return domain.PaymentCreateResponse{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpCli.Do(httpReq)
-	if err != nil {
-		return domain.PaymentCreateResponse{}, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return domain.PaymentCreateResponse{}, err
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if len(respBody) == 0 {
-			return domain.PaymentCreateResponse{}, fmt.Errorf("payment service returned status %d", resp.StatusCode)
-		}
-		return domain.PaymentCreateResponse{}, errors.New(string(respBody))
-	}
-
-	var out domain.PaymentCreateResponse
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return domain.PaymentCreateResponse{}, err
-	}
-	return out, nil
+	return domain.PaymentCreateResponse{
+		PaymentID:     resp.GetPaymentId(),
+		TransactionID: resp.GetTransactionId(),
+		Status:        resp.GetStatus(),
+	}, nil
 }
