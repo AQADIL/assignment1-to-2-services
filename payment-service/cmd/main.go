@@ -1,16 +1,16 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"log/slog"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	httpdelivery "payment-service/internal/delivery/http"
+	pb "github.com/AQADIL/assignment2-generated/payment"
+	grpclib "google.golang.org/grpc"
+
+	grpcdelivery "payment-service/internal/delivery/grpc"
 	"payment-service/internal/repository"
 	"payment-service/internal/usecase"
 )
@@ -20,6 +20,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	dbPath := getenv("PAYMENT_DB", "./payment.db")
+	grpcPort := getenv("GRPC_PORT", "50051")
 
 	repo, err := repository.NewSQLiteRepository(dbPath)
 	if err != nil {
@@ -31,19 +32,22 @@ func main() {
 	}()
 
 	uc := usecase.NewPaymentUseCase(repo)
-	h := httpdelivery.NewHandler(uc)
-	router := httpdelivery.NewRouter(h, logger)
 
-	srv := &http.Server{
-		Addr:              ":8081",
-		Handler:           router,
-		ReadHeaderTimeout: 5 * time.Second,
+	grpcServer := grpclib.NewServer(
+		grpclib.UnaryInterceptor(grpcdelivery.LoggingInterceptor(logger)),
+	)
+	pb.RegisterPaymentServiceServer(grpcServer, grpcdelivery.NewServer(uc))
+
+	lis, err := net.Listen("tcp", ":"+grpcPort)
+	if err != nil {
+		logger.Error("failed to listen", "err", err)
+		os.Exit(1)
 	}
 
 	go func() {
-		logger.Info("payment-service starting", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("server error", "err", err)
+		logger.Info("payment-service gRPC starting", "port", grpcPort)
+		if err := grpcServer.Serve(lis); err != nil {
+			logger.Error("grpc server error", "err", err)
 			os.Exit(1)
 		}
 	}()
@@ -53,14 +57,8 @@ func main() {
 	<-quit
 
 	logger.Info("shutdown signal received")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Error("graceful shutdown failed", "err", err)
-	} else {
-		logger.Info("server stopped")
-	}
+	grpcServer.GracefulStop()
+	logger.Info("server stopped")
 }
 
 func getenv(key, fallback string) string {
