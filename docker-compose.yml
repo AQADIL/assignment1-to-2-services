@@ -1,25 +1,35 @@
 services:
   order-service:
-    image: golang:1.22
+    image: golang:1.24
     working_dir: /app
-    command: ["sh", "-c", "go mod download && go run ./cmd/main.go"]
+    command: ["sh", "-c", "go mod download && CGO_ENABLED=1 go run ./cmd/main.go"]
     ports:
       - "8080:8080"
+      - "50052:50052"
     environment:
       - ORDER_DB=/app/order.db
-      - PAYMENT_URL=http://payment-service:8081
+      - PAYMENT_GRPC_ADDR=payment-service:50051
+      - HTTP_PORT=8080
+      - GRPC_PORT=50052
+      - GONOSUMCHECK=github.com/AQADIL/*
+      - GONOSUMDB=github.com/AQADIL/*
+      - GOFLAGS=-mod=mod
     volumes:
       - ./order-service:/app
     depends_on:
       - payment-service
 
   payment-service:
-    image: golang:1.22
+    image: golang:1.24
     working_dir: /app
-    command: ["sh", "-c", "go mod download && go run ./cmd/main.go"]
+    command: ["sh", "-c", "go mod download && CGO_ENABLED=1 go run ./cmd/main.go"]
     ports:
-      - "8081:8081"
+      - "50051:50051"
     environment:
       - PAYMENT_DB=/app/payment.db
+      - GRPC_PORT=50051
+      - GONOSUMCHECK=github.com/AQADIL/*
+      - GONOSUMDB=github.com/AQADIL/*
+      - GOFLAGS=-mod=mod
     volumes:
       - ./payment-service:/app
