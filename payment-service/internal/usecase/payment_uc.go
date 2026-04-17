@@ -43,3 +43,10 @@ func (uc *PaymentUseCase) CreatePayment(ctx context.Context, req domain.CreatePa
 func (uc *PaymentUseCase) GetPayment(ctx context.Context, orderID string) (domain.Payment, error) {
 	return uc.repo.GetByOrderID(ctx, orderID)
 }
+
+func (uc *PaymentUseCase) ListPayments(ctx context.Context, minAmount, maxAmount int64) ([]domain.Payment, error) {
+	if minAmount > 0 && maxAmount > 0 && minAmount > maxAmount {
+		return nil, domain.ErrInvalidRange
+	}
+	return uc.repo.FindByAmountRange(ctx, minAmount, maxAmount)
+}

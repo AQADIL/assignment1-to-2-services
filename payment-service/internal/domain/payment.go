@@ -12,6 +12,7 @@ const (
 
 var (
 	ErrPaymentNotFound = errors.New("payment not found")
+	ErrInvalidRange    = errors.New("invalid range: min_amount must be <= max_amount")
 )
 
 type Payment struct {
@@ -36,9 +37,11 @@ type CreatePaymentResponse struct {
 type PaymentRepository interface {
 	Create(ctx context.Context, p Payment) error
 	GetByOrderID(ctx context.Context, orderID string) (Payment, error)
+	FindByAmountRange(ctx context.Context, minAmount, maxAmount int64) ([]Payment, error)
 }
 
 type PaymentUseCase interface {
 	CreatePayment(ctx context.Context, req CreatePaymentRequest) (CreatePaymentResponse, error)
 	GetPayment(ctx context.Context, orderID string) (Payment, error)
+	ListPayments(ctx context.Context, minAmount, maxAmount int64) ([]Payment, error)
 }

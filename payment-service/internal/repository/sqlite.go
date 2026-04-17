@@ -70,3 +70,25 @@ func (r *SQLiteRepository) GetByOrderID(ctx context.Context, orderID string) (do
 	}
 	return p, nil
 }
+
+func (r *SQLiteRepository) FindByAmountRange(ctx context.Context, minAmount, maxAmount int64) ([]domain.Payment, error) {
+	q := `SELECT id, order_id, transaction_id, amount, status FROM payments WHERE (? = 0 OR amount >= ?) AND (? = 0 OR amount <= ?)`
+	rows, err := r.db.QueryContext(ctx, q, minAmount, minAmount, maxAmount, maxAmount)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var payments []domain.Payment
+	for rows.Next() {
+		var p domain.Payment
+		if err := rows.Scan(&p.ID, &p.OrderID, &p.TransactionID, &p.Amount, &p.Status); err != nil {
+			return nil, err
+		}
+		payments = append(payments, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return payments, nil
+}

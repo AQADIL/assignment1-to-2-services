@@ -13,6 +13,7 @@ import (
 
 	pb "github.com/AQADIL/assignment2-generated/order"
 	grpclib "google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 
 	grpcdelivery "order-service/internal/delivery/grpc"
 	httpdelivery "order-service/internal/delivery/http"
@@ -71,6 +72,7 @@ func main() {
 	grpcPort := getenv("GRPC_PORT", "50052")
 	grpcSrv := grpclib.NewServer()
 	pb.RegisterOrderServiceServer(grpcSrv, grpcdelivery.NewServer(uc, repo))
+	reflection.Register(grpcSrv)
 
 	lis, err := net.Listen("tcp", ":"+grpcPort)
 	if err != nil {

@@ -10,12 +10,6 @@ run-order:
 run-payment:
 	cd payment-service && go run ./cmd/main.go
 
-docker-up:
-	docker compose up -d
-
-docker-down:
-	docker compose down
-
 clean:
 	rm -rf order-service/bin payment-service/bin
 	rm -f order-service/order.db payment-service/payment.db

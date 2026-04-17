@@ -63,3 +63,25 @@ func (s *Server) GetPaymentByOrderId(ctx context.Context, req *pb.GetPaymentRequ
 		Status:        p.Status,
 	}, nil
 }
+
+func (s *Server) ListPayments(ctx context.Context, req *pb.ListPaymentsRequest) (*pb.ListPaymentsResponse, error) {
+	payments, err := s.uc.ListPayments(ctx, req.GetMinAmount(), req.GetMaxAmount())
+	if err != nil {
+		if err == domain.ErrInvalidRange {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	resp := &pb.ListPaymentsResponse{}
+	for _, p := range payments {
+		resp.Payments = append(resp.Payments, &pb.Payment{
+			Id:            p.ID,
+			OrderId:       p.OrderID,
+			TransactionId: p.TransactionID,
+			Amount:        p.Amount,
+			Status:        p.Status,
+		})
+	}
+	return resp, nil
+}
