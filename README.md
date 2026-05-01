@@ -55,6 +55,31 @@ All money values are `int64` representing **cents**. No floats are used.
 
 ---
 
+## Assignment 3 (EDA) — NATS JetStream
+
+### Event-Driven Flow
+
+1. `payment-service` processes a payment via gRPC (`ProcessPayment`).
+2. After the payment is persisted in SQLite, `payment-service` publishes a JSON event to JetStream subject `payments.completed` (Stream: `PAYMENTS`).
+3. `notification-service` is completely decoupled from gRPC/REST. It only consumes events from NATS and prints a notification line.
+
+### At-Least-Once Delivery (Manual ACK)
+
+The `notification-service` uses a JetStream pull consumer with **manual ack**. A message is only considered handled after explicit `Ack()`.
+
+### Idempotency (processed_events)
+
+`notification-service` persists processed event IDs in SQLite table:
+
+`processed_events (event_id TEXT PRIMARY KEY, created_at DATETIME)`
+
+If a duplicate message arrives (same `event_id`), the consumer **ACKs and skips** it, ensuring an idempotent consumer.
+
+### DLQ (Poison Messages)
+
+For payloads that cannot be parsed or contain a failure flag, the consumer republishes the raw payload to `payments.completed.dlq` and ACKs the original message.
+
+
 ## Order Service
 
 ### gRPC RPCs (port 50052)
