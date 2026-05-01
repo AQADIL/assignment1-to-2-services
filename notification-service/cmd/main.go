@@ -2,13 +2,15 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/nats-io/nats.go"
+
+	natsdelivery "notification-service/internal/delivery/nats"
 	"notification-service/internal/repository"
 )
 
@@ -17,6 +19,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	dbPath := getenv("NOTIFICATION_DB", "./notification.db")
+	natsURL := getenv("NATS_URL", "nats://localhost:4222")
 
 	repo, err := repository.NewSQLiteRepository(dbPath)
 	if err != nil {
@@ -27,18 +30,42 @@ func main() {
 		_ = repo.Close()
 	}()
 
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		logger.Error("failed to connect nats", "err", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	js, err := nc.JetStream()
+	if err != nil {
+		logger.Error("failed to init jetstream", "err", err)
+		os.Exit(1)
+	}
+
+	if _, err := js.AddStream(&nats.StreamConfig{
+		Name:     "PAYMENTS",
+		Subjects: []string{"payments.completed", "payments.completed.dlq"},
+		Storage:  nats.FileStorage,
+	}); err != nil {
+		logger.Error("failed to ensure stream", "err", err)
+		os.Exit(1)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	consumer := natsdelivery.NewConsumer(js, repo, "payments.completed.dlq")
+	if err := consumer.Start(ctx, "payments.completed", "notification"); err != nil {
+		logger.Error("failed to start consumer", "err", err)
+		os.Exit(1)
+	}
+
 	<-ctx.Done()
+	_ = consumer.Stop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	if err := repo.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-		logger.Error("failed to close db", "err", err)
-	}
-
 	<-shutdownCtx.Done()
 	logger.Info("notification-service stopped")
 }
