@@ -1,4 +1,11 @@
 services:
+  nats:
+    image: nats:2
+    command: ["-js"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
   order-service:
     image: golang:1.24
     working_dir: /app
@@ -9,6 +16,7 @@ services:
     environment:
       - ORDER_DB=/app/order.db
       - PAYMENT_GRPC_ADDR=payment-service:50051
+      - NATS_URL=nats://nats:4222
       - HTTP_PORT=8080
       - GRPC_PORT=50052
       - GONOSUMCHECK=github.com/AQADIL/*
@@ -18,6 +26,7 @@ services:
       - ./order-service:/app
     depends_on:
       - payment-service
+      - nats
 
   payment-service:
     image: golang:1.24
@@ -28,8 +37,24 @@ services:
     environment:
       - PAYMENT_DB=/app/payment.db
       - GRPC_PORT=50051
+      - NATS_URL=nats://nats:4222
       - GONOSUMCHECK=github.com/AQADIL/*
       - GONOSUMDB=github.com/AQADIL/*
       - GOFLAGS=-mod=mod
     volumes:
       - ./payment-service:/app
+
+  notification-service:
+    image: golang:1.24
+    working_dir: /app
+    command: ["sh", "-c", "go mod download && CGO_ENABLED=1 go run ./cmd/main.go"]
+    environment:
+      - NOTIFICATION_DB=/app/notification.db
+      - NATS_URL=nats://nats:4222
+      - GONOSUMCHECK=github.com/AQADIL/*
+      - GONOSUMDB=github.com/AQADIL/*
+      - GOFLAGS=-mod=mod
+    volumes:
+      - ./notification-service:/app
+    depends_on:
+      - nats
