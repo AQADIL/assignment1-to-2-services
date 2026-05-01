@@ -2,17 +2,23 @@ package usecase
 
 import (
 	"context"
+	natsdelivery "payment-service/internal/delivery/nats"
 	"payment-service/internal/domain"
 
 	"github.com/google/uuid"
 )
 
 type PaymentUseCase struct {
-	repo domain.PaymentRepository
+	repo      domain.PaymentRepository
+	publisher *natsdelivery.Publisher
 }
 
 func NewPaymentUseCase(repo domain.PaymentRepository) *PaymentUseCase {
 	return &PaymentUseCase{repo: repo}
+}
+
+func NewPaymentUseCaseWithPublisher(repo domain.PaymentRepository, publisher *natsdelivery.Publisher) *PaymentUseCase {
+	return &PaymentUseCase{repo: repo, publisher: publisher}
 }
 
 func (uc *PaymentUseCase) CreatePayment(ctx context.Context, req domain.CreatePaymentRequest) (domain.CreatePaymentResponse, error) {
@@ -31,6 +37,16 @@ func (uc *PaymentUseCase) CreatePayment(ctx context.Context, req domain.CreatePa
 
 	if err := uc.repo.Create(ctx, p); err != nil {
 		return domain.CreatePaymentResponse{}, err
+	}
+
+	if uc.publisher != nil {
+		_ = uc.publisher.PublishPaymentCompleted(ctx, natsdelivery.PaymentCompletedEvent{
+			EventID:       uuid.NewString(),
+			OrderID:       p.OrderID,
+			Amount:        p.Amount,
+			CustomerEmail: "user@example.com",
+			Status:        p.Status,
+		})
 	}
 
 	return domain.CreatePaymentResponse{
