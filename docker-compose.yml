@@ -7,7 +7,7 @@ services:
       - "8222:8222"
 
   order-service:
-    image: golang:1.24
+    image: golang:1.25
     working_dir: /app
     command: ["sh", "-c", "go mod download && CGO_ENABLED=1 go run ./cmd/main.go"]
     ports:
@@ -29,7 +29,7 @@ services:
       - nats
 
   payment-service:
-    image: golang:1.24
+    image: golang:1.25
     working_dir: /app
     command: ["sh", "-c", "go mod download && CGO_ENABLED=1 go run ./cmd/main.go"]
     ports:
@@ -45,7 +45,7 @@ services:
       - ./payment-service:/app
 
   notification-service:
-    image: golang:1.24
+    image: golang:1.25
     working_dir: /app
     command: ["sh", "-c", "go mod download && CGO_ENABLED=1 go run ./cmd/main.go"]
     environment:
