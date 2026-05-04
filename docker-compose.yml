@@ -11,7 +11,7 @@ services:
     working_dir: /app
     command: ["sh", "-c", "go mod download && CGO_ENABLED=1 go run ./cmd/main.go"]
     ports:
-      - "8080:8080"
+      - "8081:8080"
       - "50052:50052"
     environment:
       - ORDER_DB=/app/order.db
