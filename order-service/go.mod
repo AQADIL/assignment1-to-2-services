@@ -1,6 +1,6 @@
 module order-service
 
-go 1.25.5
+go 1.24.0
 
 require (
 	github.com/AQADIL/assignment2-generated v0.3.0
