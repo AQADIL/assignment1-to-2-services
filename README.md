@@ -1,32 +1,99 @@
-# AP2 — Assignment 2: Order & Payment Microservices (gRPC + Clean Architecture)
+# AP2 — Assignment 2+3: Order & Payment Microservices (gRPC + EDA)
 
 ## Project Overview
 
-This repository contains two isolated Go microservices communicating via **gRPC**:
+Three isolated Go microservices communicating via **gRPC** and **NATS JetStream**:
 
 | Service | Transport | Port(s) | Database |
 |---------|-----------|---------|----------|
-| **Order Service** | HTTP (Gin) + gRPC | HTTP `8080`, gRPC `50052` | SQLite `order.db` |
-| **Payment Service** | gRPC only | gRPC `50051` | SQLite `payment.db` |
+| **Order Service** | HTTP (Gin) + gRPC | HTTP `8081`, gRPC `50052` | SQLite `order.db` |
+| **Payment Service** | gRPC + NATS Publisher | gRPC `50051` | SQLite `payment.db` |
+| **Notification Service** | NATS Consumer only | — | SQLite `notification.db` |
 
-Each service is a **separate Go module** with **no shared packages**.
+---
 
-## Remote Proto Repositories
+## System Architecture
 
-| Repository | Purpose |
-|------------|---------|
-| [assignment2-protos](https://github.com/AQADIL/assignment2-protos) | `.proto` source definitions for both services |
-| [assignment2-generated](https://github.com/AQADIL/assignment2-generated) | Generated Go code (`*.pb.go` + `*_grpc.pb.go`) imported by both services |
+```mermaid
+graph TB
+    subgraph Client["👤 Client"]
+        grpcurl["grpcurl / curl"]
+    end
 
-The generated Go module is imported as:
-```go
-import pb "github.com/AQADIL/assignment2-generated/order"
-import pb "github.com/AQADIL/assignment2-generated/payment"
+    subgraph OrderSvc["📦 Order Service"]
+        orderHTTP["HTTP :8081"]
+        orderGRPC["gRPC :50052"]
+        orderUC["OrderUseCase"]
+        orderDB[("SQLite<br/>order.db")]
+    end
+
+    subgraph PaymentSvc["💳 Payment Service"]
+        payGRPC["gRPC :50051"]
+        payUC["PaymentUseCase"]
+        payDB[("SQLite<br/>payment.db")]
+        payPub["NATS Publisher"]
+    end
+
+    subgraph NATS["☁️ NATS JetStream"]
+        stream["Stream: PAYMENTS"]
+        subject["payments.completed"]
+        dlqSubject["payments.completed.dlq"]
+    end
+
+    subgraph NotifSvc["🔔 Notification Service"]
+        notifSub["NATS Consumer<br/>(Manual ACK)"]
+        notifDB[("SQLite<br/>notification.db<br/>processed_events")]
+        notifLog["📧 Send Email"]
+    end
+
+    grpcurl --> orderHTTP
+    grpcurl --> orderGRPC
+    grpcurl --> payGRPC
+
+    orderHTTP --> orderUC
+    orderGRPC --> orderUC
+    orderUC -->|"gRPC ProcessPayment"| payGRPC
+    orderUC --> orderDB
+
+    payGRPC --> payUC
+    payUC --> payDB
+    payUC -->|"Publish event"| payPub
+    payPub --> subject
+    subject --> stream
+
+    stream --> notifSub
+    notifSub -->|"Check event_id"| notifDB
+    notifSub -->|"New event"| notifLog
+    notifSub -->|"fail:true / bad JSON"| dlqSubject
+
+    style NATS fill:#4FC3F7,stroke:#0288D1,color:#000
+    style NotifSvc fill:#81C784,stroke:#388E3C,color:#000
+    style PaymentSvc fill:#FFB74D,stroke:#F57C00,color:#000
+    style OrderSvc fill:#CE93D8,stroke:#7B1FA2,color:#fff
 ```
 
-## Architecture (Strict Clean Architecture)
+---
 
-Each service is split into layers:
+## Clean Architecture
+
+```mermaid
+graph LR
+    subgraph "Each Service"
+        delivery["🚚 Delivery<br/>gRPC / HTTP / NATS"]
+        usecase["⚙️ UseCase<br/>Business Logic"]
+        domain["💎 Domain<br/>Entities & Interfaces"]
+        repo["🗄️ Repository<br/>SQLite"]
+    end
+
+    delivery --> usecase
+    usecase --> domain
+    repo --> domain
+
+    style domain fill:#FFD54F,stroke:#F9A825,color:#000
+    style usecase fill:#4FC3F7,stroke:#0288D1,color:#000
+    style delivery fill:#81C784,stroke:#388E3C,color:#000
+    style repo fill:#CE93D8,stroke:#7B1FA2,color:#fff
+```
 
 ```
 internal/
@@ -35,50 +102,84 @@ internal/
 ├── repository/     # SQLite persistence + auto-migrations
 └── delivery/
     ├── http/       # Gin REST layer (Order Service only)
-    └── grpc/       # gRPC server implementation
+    ├── grpc/       # gRPC server implementation
+    └── nats/       # NATS publisher / consumer
 ```
 
 Dependencies flow inward: `delivery → usecase → domain ← repository`
 
-The Domain and Use Case layers are **never modified** for transport changes — only the Delivery layer was swapped from REST to gRPC.
+---
 
-## Bounded Contexts / Isolation
+## Event-Driven Architecture (Assignment 3)
 
-- **Order Service** defines its own `Order` entity, DTOs, and ports.
-- **Payment Service** defines its own `Payment` entity, DTOs, and ports.
-- There is **no shared folder** and **no import from one service into the other**.
-- Inter-service communication uses the shared protobuf contracts from `assignment2-generated`.
+### EDA Flow
 
-## Money Representation
+```mermaid
+sequenceDiagram
+    participant C as 👤 Client
+    participant P as 💳 Payment Service
+    participant N as ☁️ NATS JetStream
+    participant NF as 🔔 Notification Service
 
-All money values are `int64` representing **cents**. No floats are used.
+    C->>P: gRPC ProcessPayment(order_id, amount)
+    P->>P: Save to SQLite
+    P->>N: Publish {event_id, order_id, amount, email, status}
+    Note over N: Stream: PAYMENTS<br/>Subject: payments.completed
+    N->>NF: PullSubscribe (Manual ACK)
+    NF->>NF: IsProcessed(event_id)?
+    alt New Event
+        NF->>NF: MarkProcessed(event_id)
+        NF->>NF: 📧 Send Email Notification
+        NF->>N: msg.Ack()
+    else Duplicate Event
+        NF->>N: msg.Ack() (skip)
+    end
+```
+
+### DLQ Flow (Poison Messages)
+
+```mermaid
+sequenceDiagram
+    participant P as 💳 Payment Service
+    participant N as ☁️ NATS JetStream
+    participant NF as 🔔 Notification Service
+
+    P->>N: Publish {fail: true} or bad JSON
+    N->>NF: Deliver message
+    NF->>NF: json.Unmarshal() fails OR fail=true
+    NF->>N: Republish to payments.completed.dlq
+    NF->>N: msg.Ack() (original)
+    Note over N: DLQ stores poison messages<br/>for later analysis
+```
+
+### Key Concepts
+
+| Concept | Implementation |
+|---------|---------------|
+| **At-Least-Once Delivery** | JetStream pull consumer with `ManualAck()` |
+| **Idempotency** | `processed_events(event_id PK)` — duplicates are ACKed and skipped |
+| **DLQ** | Bad JSON or `fail:true` → republish to `payments.completed.dlq` |
+| **Decoupling** | Payment does not know about Notification — they only share NATS subjects |
+
+### DLQ Simulation
+
+If `order_id` starts with `"dlq-"`, the publisher sets `fail:true` in the event. The consumer sees the flag and sends the message to the DLQ instead of processing it.
 
 ---
 
-## Assignment 3 (EDA) — NATS JetStream
+## Remote Proto Repositories
 
-### Event-Driven Flow
+| Repository | Purpose |
+|------------|---------|
+| [assignment2-protos](https://github.com/AQADIL/assignment2-protos) | `.proto` source definitions |
+| [assignment2-generated](https://github.com/AQADIL/assignment2-generated) | Generated Go code (`*.pb.go` + `*_grpc.pb.go`) |
 
-1. `payment-service` processes a payment via gRPC (`ProcessPayment`).
-2. After the payment is persisted in SQLite, `payment-service` publishes a JSON event to JetStream subject `payments.completed` (Stream: `PAYMENTS`).
-3. `notification-service` is completely decoupled from gRPC/REST. It only consumes events from NATS and prints a notification line.
+```go
+import pb "github.com/AQADIL/assignment2-generated/order"
+import pb "github.com/AQADIL/assignment2-generated/payment"
+```
 
-### At-Least-Once Delivery (Manual ACK)
-
-The `notification-service` uses a JetStream pull consumer with **manual ack**. A message is only considered handled after explicit `Ack()`.
-
-### Idempotency (processed_events)
-
-`notification-service` persists processed event IDs in SQLite table:
-
-`processed_events (event_id TEXT PRIMARY KEY, created_at DATETIME)`
-
-If a duplicate message arrives (same `event_id`), the consumer **ACKs and skips** it, ensuring an idempotent consumer.
-
-### DLQ (Poison Messages)
-
-For payloads that cannot be parsed or contain a failure flag, the consumer republishes the raw payload to `payments.completed.dlq` and ACKs the original message.
-
+---
 
 ## Order Service
 
@@ -92,7 +193,7 @@ For payloads that cannot be parsed or contain a failure flag, the consumer repub
 | `ListOrdersByCustomer` | `ListOrdersRequest` | `ListOrdersResponse` | List all orders for a customer |
 | `SubscribeToOrderUpdates` | `OrderFilter` | `stream OrderResponse` | **Server-streaming** real-time order updates |
 
-### HTTP REST Endpoints (port 8080, backward compatible)
+### HTTP REST Endpoints (port 8081)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -101,35 +202,14 @@ For payloads that cannot be parsed or contain a failure flag, the consumer repub
 | `GET` | `/orders?customer_id=xxx` | List orders by customer |
 | `PATCH` | `/orders/:id/cancel` | Cancel order |
 
-### Payment Client (gRPC)
+### Real-Time Streaming
 
-The Order Service calls Payment Service via **gRPC** with a **2-second `context.WithTimeout`**:
-```go
-ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-resp, err := client.ProcessPayment(ctx, &pb.PaymentRequest{...})
-```
-
-If Payment Service is unreachable or times out:
-- Order status is updated to `Failed`.
-- gRPC returns `codes.Unavailable`; HTTP returns `503`.
-
-### Real-Time Streaming (`SubscribeToOrderUpdates`)
-
-This uses **Go channels tied to the SQLite repository** — no fake `time.Sleep` loops:
-
-1. Repository maintains a `map[string]*subscriber` with buffered channels.
-2. When `UpdateStatus()` is called, `notify()` pushes the updated `Order` to all matching subscribers.
-3. The gRPC stream handler reads from the channel and sends to the client.
-4. On client disconnect (`stream.Context().Done()`), the subscriber is cleaned up.
-
-```
-Client ──SubscribeToOrderUpdates──▶ gRPC Server
-                                        │
-                                   Subscribe(customerID)
-                                        │
-                                   ◀── ch <-chan Order
-                                        │
-    UpdateStatus() ──▶ notify() ──▶ ch ──▶ stream.Send()
+```mermaid
+graph LR
+    Client["👤 Client"] -->|"SubscribeToOrderUpdates"| gRPC["gRPC Server"]
+    gRPC -->|"ch <-chan Order"| Repo["SQLite Repo"]
+    Repo -->|"UpdateStatus() → notify()"| gRPC
+    gRPC -->|"stream.Send()"| Client
 ```
 
 ### Idempotency (HTTP only)
@@ -148,32 +228,17 @@ Order creation via HTTP supports idempotency via the `Idempotency-Key` header:
 |-----|---------|----------|-------------|
 | `ProcessPayment` | `PaymentRequest` | `PaymentResponse` | Authorize or decline a payment |
 | `GetPaymentByOrderId` | `GetPaymentRequest` | `Payment` | Get payment by order ID |
+| `ListPayments` | `ListPaymentsRequest` | `ListPaymentsResponse` | List payments by amount range |
 
 ### Business Rule
 
 If `amount > 100000` → status `Declined`, else `Authorized`.
 
-### Logging Interceptor (Bonus)
+### Logging Interceptor
 
-A **gRPC UnaryServerInterceptor** logs every RPC call:
-```go
-func LoggingInterceptor(logger *slog.Logger) grpc.UnaryServerInterceptor {
-    return func(ctx, req, info, handler) (resp, err) {
-        start := time.Now()
-        resp, err = handler(ctx, req)
-        logger.Info("grpc_request",
-            "method", info.FullMethod,
-            "duration_ms", time.Since(start).Milliseconds(),
-            "error", err,
-        )
-        return resp, err
-    }
-}
-```
+A **gRPC UnaryServerInterceptor** logs every RPC call with method name, duration, and error.
 
 ### Error Handling
-
-Both services use `google.golang.org/grpc/status` and `codes`:
 
 | Domain Error | gRPC Code |
 |-------------|-----------|
@@ -181,40 +246,59 @@ Both services use `google.golang.org/grpc/status` and `codes`:
 | `ErrInvalidAmount` | `codes.InvalidArgument` |
 | `ErrCannotCancelOrder` | `codes.FailedPrecondition` |
 | `ErrPaymentUnavailable` | `codes.Unavailable` |
+| `ErrInvalidRange` | `codes.InvalidArgument` |
 | Internal errors | `codes.Internal` |
+
+---
+
+## Docker Compose
+
+```mermaid
+graph TB
+    subgraph Docker["🐳 Docker Compose"]
+        nats["nats:2<br/>:4222 :8222<br/>JetStream enabled"]
+        order["order-service<br/>golang:1.25<br/>:8081 :50052"]
+        payment["payment-service<br/>golang:1.25<br/>:50051"]
+        notif["notification-service<br/>golang:1.25"]
+    end
+
+    order -->|"gRPC :50051"| payment
+    payment -->|"NATS :4222"| nats
+    notif -->|"NATS :4222"| nats
+
+    style nats fill:#4FC3F7,stroke:#0288D1,color:#000
+    style order fill:#CE93D8,stroke:#7B1FA2,color:#fff
+    style payment fill:#FFB74D,stroke:#F57C00,color:#000
+    style notif fill:#81C784,stroke:#388E3C,color:#000
+```
 
 ---
 
 ## Environment Variables
 
-### Order Service
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ORDER_DB` | `./order.db` | Path to SQLite database |
-| `PAYMENT_GRPC_ADDR` | `localhost:50051` | Payment Service gRPC address |
-| `HTTP_PORT` | `8080` | HTTP server port |
-| `GRPC_PORT` | `50052` | gRPC server port |
-
-### Payment Service
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PAYMENT_DB` | `./payment.db` | Path to SQLite database |
-| `GRPC_PORT` | `50051` | gRPC server port |
+| Variable | Service | Default | Description |
+|----------|---------|---------|-------------|
+| `ORDER_DB` | Order | `./order.db` | SQLite database path |
+| `PAYMENT_GRPC_ADDR` | Order | `localhost:50051` | Payment Service gRPC address |
+| `HTTP_PORT` | Order | `8080` | HTTP server port |
+| `GRPC_PORT` | Order | `50052` | gRPC server port |
+| `PAYMENT_DB` | Payment | `./payment.db` | SQLite database path |
+| `GRPC_PORT` | Payment | `50051` | gRPC server port |
+| `NATS_URL` | Payment, Notification | `nats://localhost:4222` | NATS server address |
+| `NOTIFICATION_DB` | Notification | `./notification.db` | SQLite database path |
 
 ---
 
 ## Running
 
-### Option A: Docker Compose (recommended)
+### Docker Compose (recommended)
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 docker compose logs -f
 ```
 
-### Option B: Locally (two terminals)
+### Locally (three terminals)
 
 ```bash
 # Terminal 1 — Payment Service
@@ -222,14 +306,31 @@ make run-payment
 
 # Terminal 2 — Order Service
 make run-order
+
+# Terminal 3 — Notification Service
+cd notification-service && go run ./cmd/main.go
 ```
 
-### Testing with grpcurl
+---
+
+## Testing with grpcurl
+
+### Payment Service (port 50051)
 
 ```bash
-# Create a payment
+# Create a payment → publishes event to NATS
 grpcurl -plaintext -d '{"order_id":"test-1","amount":5000}' localhost:50051 payment.PaymentService/ProcessPayment
 
+# Get payment by order ID
+grpcurl -plaintext -d '{"order_id":"test-1"}' localhost:50051 payment.PaymentService/GetPaymentByOrderId
+
+# List payments by amount range (0 = no limit)
+grpcurl -plaintext -d '{"min_amount":1000,"max_amount":50000}' localhost:50051 payment.PaymentService/ListPayments
+```
+
+### Order Service (gRPC port 50052)
+
+```bash
 # Create an order
 grpcurl -plaintext -d '{"customer_id":"alice","item_name":"Laptop","amount":50000}' localhost:50052 order.OrderService/CreateOrder
 
@@ -242,6 +343,40 @@ grpcurl -plaintext -d '{"customer_id":"alice"}' localhost:50052 order.OrderServi
 # Subscribe to real-time updates (streams)
 grpcurl -plaintext -d '{"customer_id":"alice"}' localhost:50052 order.OrderService/SubscribeToOrderUpdates
 ```
+
+### Order Service (HTTP port 8081)
+
+```bash
+# Create order
+curl -X POST http://localhost:8081/orders -H "Content-Type: application/json" -d '{"customer_id":"alice","item_name":"Phone","amount":30000}'
+
+# List orders
+curl http://localhost:8081/orders?customer_id=alice
+
+# Get order
+curl http://localhost:8081/orders/<id>
+
+# Cancel order
+curl -X PATCH http://localhost:8081/orders/<id>/cancel
+```
+
+### EDA / Notification Verification
+
+```bash
+# 1. Create a payment (triggers NATS event)
+grpcurl -plaintext -d '{"order_id":"normal-1","amount":5000}' localhost:50051 payment.PaymentService/ProcessPayment
+
+# 2. Check notification logs — should see email sent
+docker logs ap2_assignment1-notification-service-1
+
+# 3. DLQ simulation — order_id starting with "dlq-" triggers fail=true
+grpcurl -plaintext -d '{"order_id":"dlq-test1","amount":5000}' localhost:50051 payment.PaymentService/ProcessPayment
+
+# 4. Check notification logs — should NOT see email for dlq-test1
+docker logs ap2_assignment1-notification-service-1
+```
+
+---
 
 ## Build
 

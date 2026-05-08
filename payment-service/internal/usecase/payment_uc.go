@@ -40,12 +40,15 @@ func (uc *PaymentUseCase) CreatePayment(ctx context.Context, req domain.CreatePa
 	}
 
 	if uc.publisher != nil {
+		// DLQ simulation: if order_id starts with "dlq-", set Fail=true
+		failDLQ := len(p.OrderID) > 4 && p.OrderID[:4] == "dlq-"
 		_ = uc.publisher.PublishPaymentCompleted(ctx, natsdelivery.PaymentCompletedEvent{
 			EventID:       uuid.NewString(),
 			OrderID:       p.OrderID,
 			Amount:        p.Amount,
-			CustomerEmail: "user@example.com",
+			CustomerEmail: "ТЕНТЕК@gmail.com",
 			Status:        p.Status,
+			Fail:          failDLQ,
 		})
 	}
 

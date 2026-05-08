@@ -18,6 +18,7 @@ type PaymentCompletedEvent struct {
 	Amount        int64  `json:"amount"`
 	CustomerEmail string `json:"customer_email"`
 	Status        string `json:"status"`
+	Fail          bool   `json:"fail,omitempty"`
 }
 
 func NewPublisher(js nats.JetStreamContext, subject string) *Publisher {

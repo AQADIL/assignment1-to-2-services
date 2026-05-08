@@ -55,11 +55,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	logger.Info("notification-service starting", "nats_url", natsURL, "db_path", dbPath)
+
 	consumer := natsdelivery.NewConsumer(js, repo, "payments.completed.dlq")
 	if err := consumer.Start(ctx, "payments.completed", "notification"); err != nil {
 		logger.Error("failed to start consumer", "err", err)
 		os.Exit(1)
 	}
+	logger.Info("notification-service consumer started")
 
 	<-ctx.Done()
 	_ = consumer.Stop()

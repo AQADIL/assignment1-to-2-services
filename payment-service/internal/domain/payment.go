@@ -14,7 +14,7 @@ var (
 	ErrPaymentNotFound = errors.New("payment not found")
 	ErrInvalidRange    = errors.New("invalid range: min_amount must be <= max_amount")
 )
-
+	
 type Payment struct {
 	ID            string `json:"id"`
 	OrderID       string `json:"order_id"`
