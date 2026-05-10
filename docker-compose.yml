@@ -6,6 +6,12 @@ services:
       - "4222:4222"
       - "8222:8222"
 
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   order-service:
     image: golang:1.25
     working_dir: /app
@@ -17,6 +23,9 @@ services:
       - ORDER_DB=/app/order.db
       - PAYMENT_GRPC_ADDR=payment-service:50051
       - NATS_URL=nats://nats:4222
+      - REDIS_URL=redis://redis:6379
+      - RATE_LIMIT_REQUESTS=10
+      - RATE_LIMIT_WINDOW_SEC=60
       - HTTP_PORT=8080
       - GRPC_PORT=50052
       - GONOSUMCHECK=github.com/AQADIL/*
@@ -27,6 +36,7 @@ services:
     depends_on:
       - payment-service
       - nats
+      - redis
 
   payment-service:
     image: golang:1.25
@@ -51,6 +61,8 @@ services:
     environment:
       - NOTIFICATION_DB=/app/notification.db
       - NATS_URL=nats://nats:4222
+      - REDIS_URL=redis://redis:6379
+      - PROVIDER_MODE=SIMULATED
       - GONOSUMCHECK=github.com/AQADIL/*
       - GONOSUMDB=github.com/AQADIL/*
       - GOFLAGS=-mod=mod
@@ -58,3 +70,4 @@ services:
       - ./notification-service:/app
     depends_on:
       - nats
+      - redis

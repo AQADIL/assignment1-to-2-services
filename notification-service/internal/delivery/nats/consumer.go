@@ -45,7 +45,7 @@ func (c *Consumer) Start(ctx context.Context, subject, durable string) error {
 			select {
 			case <-ctx.Done():
 				return
-			default:
+			default:	
 			}
 
 			msgs, err := sub.Fetch(1, nats.Context(ctx))
