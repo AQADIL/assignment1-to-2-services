@@ -1,4 +1,4 @@
-# AP2 — Assignment 2+3: Order & Payment Microservices (gRPC + EDA)
+# AP2 — Assignment 2+3+4: Order & Payment Microservices (gRPC + EDA + Performance)
 
 ## Project Overview
 
@@ -251,21 +251,188 @@ A **gRPC UnaryServerInterceptor** logs every RPC call with method name, duration
 
 ---
 
+## Assignment 4: Performance Optimization & External Integrations
+
+### Full System Architecture
+
+```mermaid
+graph TB
+    subgraph Client["👤 Client"]
+        curl["curl / grpcurl"]
+    end
+
+    subgraph OrderSvc["📦 Order Service"]
+        RL["🚦 Rate Limiter\n10 req/min/IP"]
+        HTTP["HTTP :8081"]
+        gRPC2["gRPC :50052"]
+        UC["OrderUseCase"]
+        SQLite1[("SQLite\norder.db")]
+    end
+
+    subgraph Redis["⚡ Redis"]
+        Cache["order:{id}\nTTL 5min"]
+        RLStore["rl:{ip}\nTTL 60s"]
+        Idem["notif:processed:{event_id}\nTTL 24h"]
+    end
+
+    subgraph PaymentSvc["💳 Payment Service"]
+        gRPC1["gRPC :50051"]
+        PayUC["PaymentUseCase"]
+        SQLite2[("SQLite\npayment.db")]
+        Pub["NATS Publisher"]
+    end
+
+    subgraph NATS["☁️ NATS JetStream"]
+        Subject["payments.completed"]
+        DLQ["payments.completed.dlq"]
+    end
+
+    subgraph NotifSvc["🔔 Notification Service"]
+        Consumer["NATS Consumer\n(Manual ACK)"]
+        CB["🔌 Circuit Breaker\n3 fails → open 30s"]
+        Retry["🔄 Retry\nExp Backoff 2s/4s/8s"]
+        Provider["Email Provider\n(Mock/SMTP)"]
+    end
+
+    curl --> RL --> HTTP --> UC
+    curl --> gRPC2 --> UC
+    UC -->|"cache miss → DB → SET"| Cache
+    UC -->|"GET cache hit"| Cache
+    UC -->|"DELETE on update"| Cache
+    RL --> RLStore
+    UC --> SQLite1
+    UC -->|"gRPC"| gRPC1 --> PayUC --> SQLite2
+    PayUC --> Pub --> Subject --> NATS
+
+    NATS --> Consumer
+    Consumer -->|"check event_id"| Idem
+    Consumer --> CB --> Retry --> Provider
+
+    style Redis fill:#FF7043,stroke:#BF360C,color:#fff
+    style NATS fill:#4FC3F7,stroke:#0288D1,color:#000
+    style NotifSvc fill:#81C784,stroke:#388E3C,color:#000
+    style PaymentSvc fill:#FFB74D,stroke:#F57C00,color:#000
+    style OrderSvc fill:#CE93D8,stroke:#7B1FA2,color:#fff
+```
+
+---
+
+### Cache-Aside Pattern (Order Service)
+
+```mermaid
+flowchart LR
+    A["GET /orders/:id"] --> B{Redis HIT?}
+    B -- Yes --> C["Return cached order\n⚡ fast"]
+    B -- No --> D["Query SQLite"]
+    D --> E["SET Redis TTL=5min"]
+    E --> F["Return order"]
+
+    G["UpdateStatus / Cancel"] --> H["DELETE Redis key"]
+    H --> I["Update SQLite"]
+    I --> J["SET Redis with fresh data"]
+```
+
+- Cache key: `order:{id}`
+- TTL: **5 minutes**
+- Invalidation: on `CancelOrder` and `CreateOrder` completion
+
+---
+
+### Rate Limiter (Order HTTP API)
+
+- **Redis INCR** per `rl:{client_ip}` key
+- First request sets **TTL = 60 seconds**
+- Limit: **10 requests / 60 seconds / IP**
+- Exceeded → **HTTP 429** with `retry_after` field
+
+---
+
+### Adapter Pattern (Notification Email)
+
+```mermaid
+graph LR
+    Consumer["NATS Consumer"] --> CB["CircuitBreaker\n(email.Sender)"]
+    CB --> Sender["email.Sender\ninterface"]
+    Sender -->|"PROVIDER_MODE=SIMULATED"| Mock["MockProvider\n50-200ms latency\n30% error rate"]
+    Sender -->|"PROVIDER_MODE=SMTP"| SMTP["SMTPProvider\nnet/smtp"]
+```
+
+Provider is selected at startup via `PROVIDER_MODE` env var — **no code change needed to switch**.
+
+---
+
+### Retry with Exponential Backoff
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant CB as CircuitBreaker
+    participant P as Provider
+
+    W->>CB: Send(msg)
+    CB->>P: attempt 1
+    P-->>CB: error
+    CB->>W: wait 2s
+    W->>CB: Send(msg)
+    CB->>P: attempt 2
+    P-->>CB: error
+    CB->>W: wait 4s
+    W->>CB: Send(msg)
+    CB->>P: attempt 3
+    P-->>CB: ok ✅
+    CB->>W: nil
+```
+
+Max retries: **3**, delays: **2s → 4s → 8s** (2^n seconds).
+
+---
+
+### Circuit Breaker
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Open : 3 consecutive failures
+    Open --> HalfOpen : after 30 seconds
+    HalfOpen --> Closed : next call succeeds
+    HalfOpen --> Open : next call fails
+```
+
+- **Closed**: all calls pass through
+- **Open**: calls immediately return `ErrCircuitOpen` — no network call
+- **Half-Open**: one probe call; success → Closed, failure → Open again
+
+---
+
+### Idempotency (Redis, Notification)
+
+- Key: `notif:processed:{event_id}`
+- TTL: **24 hours**
+- Before processing: `EXISTS` check
+- After success: `SET` with TTL
+- Duplicate events are ACKed and skipped immediately
+
+---
+
 ## Docker Compose
 
 ```mermaid
 graph TB
     subgraph Docker["🐳 Docker Compose"]
-        nats["nats:2<br/>:4222 :8222<br/>JetStream enabled"]
-        order["order-service<br/>golang:1.25<br/>:8081 :50052"]
-        payment["payment-service<br/>golang:1.25<br/>:50051"]
-        notif["notification-service<br/>golang:1.25"]
+        nats["nats:2\n:4222 :8222\nJetStream enabled"]
+        redis["redis:alpine\n:6379"]
+        order["order-service\ngolang:1.25\n:8081 :50052"]
+        payment["payment-service\ngolang:1.25\n:50051"]
+        notif["notification-service\ngolang:1.25"]
     end
 
     order -->|"gRPC :50051"| payment
+    order -->|"cache + rate limit"| redis
     payment -->|"NATS :4222"| nats
     notif -->|"NATS :4222"| nats
+    notif -->|"idempotency"| redis
 
+    style redis fill:#FF7043,stroke:#BF360C,color:#fff
     style nats fill:#4FC3F7,stroke:#0288D1,color:#000
     style order fill:#CE93D8,stroke:#7B1FA2,color:#fff
     style payment fill:#FFB74D,stroke:#F57C00,color:#000
@@ -286,6 +453,12 @@ graph TB
 | `GRPC_PORT` | Payment | `50051` | gRPC server port |
 | `NATS_URL` | Payment, Notification | `nats://localhost:4222` | NATS server address |
 | `NOTIFICATION_DB` | Notification | `./notification.db` | SQLite database path |
+| `REDIS_URL` | Order, Notification | `redis://localhost:6379` | Redis address |
+| `RATE_LIMIT_REQUESTS` | Order | `10` | Max requests per window per IP |
+| `RATE_LIMIT_WINDOW_SEC` | Order | `60` | Rate limit window in seconds |
+| `PROVIDER_MODE` | Notification | `SIMULATED` | Email provider: `SIMULATED` or `SMTP` |
+| `SMTP_HOST` | Notification | `localhost` | SMTP server host (SMTP mode only) |
+| `SMTP_PORT` | Notification | `25` | SMTP server port (SMTP mode only) |
 
 ---
 
