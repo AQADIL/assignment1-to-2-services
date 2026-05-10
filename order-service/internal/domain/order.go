@@ -60,6 +60,12 @@ type PaymentClient interface {
 	CreatePayment(ctx context.Context, req PaymentCreateRequest) (PaymentCreateResponse, error)
 }
 
+type OrderCache interface {
+	Get(ctx context.Context, id string) (Order, bool, error)
+	Set(ctx context.Context, order Order, ttl time.Duration) error
+	Delete(ctx context.Context, id string) error
+}
+
 type OrderUseCase interface {
 	CreateOrder(ctx context.Context, req CreateOrderRequest) (Order, error)
 	GetOrder(ctx context.Context, id string) (Order, error)

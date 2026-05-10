@@ -8,13 +8,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	pb "github.com/AQADIL/assignment2-generated/order"
+	"github.com/redis/go-redis/v9"
 	grpclib "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	"order-service/internal/cache"
 	grpcdelivery "order-service/internal/delivery/grpc"
 	httpdelivery "order-service/internal/delivery/http"
 	"order-service/internal/repository"
@@ -28,6 +31,7 @@ func main() {
 
 	dbPath := getenv("ORDER_DB", "./order.db")
 	paymentAddr := getenv("PAYMENT_GRPC_ADDR", "localhost:50051")
+	redisURL := getenv("REDIS_URL", "redis://localhost:6379")
 
 	repo, err := repository.NewSQLiteRepository(dbPath)
 	if err != nil {
@@ -47,11 +51,31 @@ func main() {
 		_ = payCli.Close()
 	}()
 
-	uc := usecase.NewOrderUseCase(repo, payCli, logger)
+	orderCache, err := cache.NewRedisCache(redisURL)
+	if err != nil {
+		logger.Error("failed to connect redis", "err", err)
+		os.Exit(1)
+	}
+	defer func() {
+		_ = orderCache.Close()
+	}()
 
-	// --- HTTP server (REST, kept for backward compat) ---
+	redisOpt, _ := redis.ParseURL(redisURL)
+	redisClient := redis.NewClient(redisOpt)
+	defer func() {
+		_ = redisClient.Close()
+	}()
+
+	uc := usecase.NewOrderUseCaseWithCache(repo, payCli, orderCache, logger)
+
+	rateLimitReqs := getenvInt("RATE_LIMIT_REQUESTS", 10)
+	rateLimitSec := getenvInt("RATE_LIMIT_WINDOW_SEC", 60)
+
 	h := httpdelivery.NewHandler(uc)
-	router := httpdelivery.NewRouter(h, repo, logger)
+	router := httpdelivery.NewRouter(h, repo, logger, redisClient, httpdelivery.RouterConfig{
+		RateLimitRequests: rateLimitReqs,
+		RateLimitWindow:   time.Duration(rateLimitSec) * time.Second,
+	})
 	httpPort := getenv("HTTP_PORT", "8080")
 
 	srv := &http.Server{
@@ -111,4 +135,16 @@ func getenv(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func getenvInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }

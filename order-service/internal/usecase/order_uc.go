@@ -11,14 +11,21 @@ import (
 	"order-service/internal/domain"
 )
 
+const orderCacheTTL = 5 * time.Minute
+
 type OrderUseCase struct {
 	repo   domain.OrderRepository
 	pay    domain.PaymentClient
+	cache  domain.OrderCache
 	logger *slog.Logger
 }
 
 func NewOrderUseCase(repo domain.OrderRepository, pay domain.PaymentClient, logger *slog.Logger) *OrderUseCase {
 	return &OrderUseCase{repo: repo, pay: pay, logger: logger}
+}
+
+func NewOrderUseCaseWithCache(repo domain.OrderRepository, pay domain.PaymentClient, cache domain.OrderCache, logger *slog.Logger) *OrderUseCase {
+	return &OrderUseCase{repo: repo, pay: pay, cache: cache, logger: logger}
 }
 
 func (uc *OrderUseCase) CreateOrder(ctx context.Context, req domain.CreateOrderRequest) (domain.Order, error) {
@@ -60,11 +67,26 @@ func (uc *OrderUseCase) CreateOrder(ctx context.Context, req domain.CreateOrderR
 	if err != nil {
 		return domain.Order{}, err
 	}
+	if uc.cache != nil {
+		_ = uc.cache.Set(ctx, updated, orderCacheTTL)
+	}
 	return updated, nil
 }
 
 func (uc *OrderUseCase) GetOrder(ctx context.Context, id string) (domain.Order, error) {
-	return uc.repo.GetByID(ctx, id)
+	if uc.cache != nil {
+		if cached, ok, err := uc.cache.Get(ctx, id); err == nil && ok {
+			return cached, nil
+		}
+	}
+	order, err := uc.repo.GetByID(ctx, id)
+	if err != nil {
+		return domain.Order{}, err
+	}
+	if uc.cache != nil {
+		_ = uc.cache.Set(ctx, order, orderCacheTTL)
+	}
+	return order, nil
 }
 
 func (uc *OrderUseCase) CancelOrder(ctx context.Context, id string) (domain.Order, error) {
@@ -78,7 +100,17 @@ func (uc *OrderUseCase) CancelOrder(ctx context.Context, id string) (domain.Orde
 	if err := uc.repo.UpdateStatus(ctx, id, domain.OrderStatusCancelled); err != nil {
 		return domain.Order{}, err
 	}
-	return uc.repo.GetByID(ctx, id)
+	if uc.cache != nil {
+		_ = uc.cache.Delete(ctx, id)
+	}
+	updated, err := uc.repo.GetByID(ctx, id)
+	if err != nil {
+		return domain.Order{}, err
+	}
+	if uc.cache != nil {
+		_ = uc.cache.Set(ctx, updated, orderCacheTTL)
+	}
+	return updated, nil
 }
 
 func (uc *OrderUseCase) ListOrdersByCustomer(ctx context.Context, customerID string) ([]domain.Order, error) {
