@@ -88,9 +88,11 @@ func main() {
 		logger.Info("email provider: SIMULATED (MockProvider)")
 	}
 
+	protectedSender := email.NewCircuitBreaker(sender, 3, 30*time.Second)
+
 	logger.Info("notification-service starting", "nats_url", natsURL, "db_path", dbPath)
 
-	consumer := natsdelivery.NewConsumer(js, store, sender, "payments.completed.dlq")
+	consumer := natsdelivery.NewConsumer(js, store, protectedSender, "payments.completed.dlq")
 	if err := consumer.Start(ctx, "payments.completed", "notification"); err != nil {
 		logger.Error("failed to start consumer", "err", err)
 		os.Exit(1)
