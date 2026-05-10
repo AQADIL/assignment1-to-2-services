@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"notification-service/internal/email"
 )
+
+const maxRetries = 3
 
 type ProcessedStore interface {
 	IsProcessed(ctx context.Context, eventID string) (bool, error)
@@ -94,12 +97,25 @@ func (c *Consumer) handle(ctx context.Context, msg *nats.Msg) error {
 		return nil
 	}
 
-	if err := c.sender.Send(ctx, email.Message{
-		To:      ev.CustomerEmail,
-		OrderID: ev.OrderID,
-		Amount:  ev.Amount,
-	}); err != nil {
-		return fmt.Errorf("email send failed: %w", err)
+	var sendErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		sendErr = c.sender.Send(ctx, email.Message{
+			To:      ev.CustomerEmail,
+			OrderID: ev.OrderID,
+			Amount:  ev.Amount,
+		})
+		if sendErr == nil {
+			break
+		}
+		delay := time.Duration(1<<uint(attempt+1)) * time.Second
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	if sendErr != nil {
+		return fmt.Errorf("email send failed after %d retries: %w", maxRetries, sendErr)
 	}
 
 	if err := c.store.MarkProcessed(ctx, ev.EventID); err != nil {

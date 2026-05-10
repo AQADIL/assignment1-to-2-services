@@ -21,15 +21,31 @@ func main() {
 
 	dbPath := getenv("NOTIFICATION_DB", "./notification.db")
 	natsURL := getenv("NATS_URL", "nats://localhost:4222")
+	redisURL := getenv("REDIS_URL", "redis://localhost:6379")
 
-	repo, err := repository.NewSQLiteRepository(dbPath)
+	sqliteRepo, err := repository.NewSQLiteRepository(dbPath)
 	if err != nil {
 		logger.Error("failed to init sqlite", "err", err)
 		os.Exit(1)
 	}
 	defer func() {
-		_ = repo.Close()
+		_ = sqliteRepo.Close()
 	}()
+
+	redisStore, err := repository.NewRedisStore(redisURL, 24*time.Hour)
+	if err != nil {
+		logger.Warn("redis unavailable, falling back to sqlite for idempotency", "err", err)
+	}
+
+	var store natsdelivery.ProcessedStore
+	if redisStore != nil {
+		store = redisStore
+		defer func() { _ = redisStore.Close() }()
+		logger.Info("idempotency store: redis")
+	} else {
+		store = sqliteRepo
+		logger.Info("idempotency store: sqlite")
+	}
 
 	nc, err := nats.Connect(natsURL)
 	if err != nil {
@@ -74,7 +90,7 @@ func main() {
 
 	logger.Info("notification-service starting", "nats_url", natsURL, "db_path", dbPath)
 
-	consumer := natsdelivery.NewConsumer(js, repo, sender, "payments.completed.dlq")
+	consumer := natsdelivery.NewConsumer(js, store, sender, "payments.completed.dlq")
 	if err := consumer.Start(ctx, "payments.completed", "notification"); err != nil {
 		logger.Error("failed to start consumer", "err", err)
 		os.Exit(1)
