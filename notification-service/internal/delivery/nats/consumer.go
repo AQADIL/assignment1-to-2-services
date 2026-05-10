@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/nats-io/nats.go"
+
+	"notification-service/internal/email"
 )
 
 type ProcessedStore interface {
@@ -26,11 +28,12 @@ type Consumer struct {
 	js         nats.JetStreamContext
 	sub        *nats.Subscription
 	store      ProcessedStore
+	sender     email.Sender
 	dlqSubject string
 }
 
-func NewConsumer(js nats.JetStreamContext, store ProcessedStore, dlqSubject string) *Consumer {
-	return &Consumer{js: js, store: store, dlqSubject: dlqSubject}
+func NewConsumer(js nats.JetStreamContext, store ProcessedStore, sender email.Sender, dlqSubject string) *Consumer {
+	return &Consumer{js: js, store: store, sender: sender, dlqSubject: dlqSubject}
 }
 
 func (c *Consumer) Start(ctx context.Context, subject, durable string) error {
@@ -45,7 +48,7 @@ func (c *Consumer) Start(ctx context.Context, subject, durable string) error {
 			select {
 			case <-ctx.Done():
 				return
-			default:	
+			default:
 			}
 
 			msgs, err := sub.Fetch(1, nats.Context(ctx))
@@ -91,7 +94,13 @@ func (c *Consumer) handle(ctx context.Context, msg *nats.Msg) error {
 		return nil
 	}
 
-	fmt.Printf("[Notification] Sent email to %s for Order #%s. Amount: $%d\n", ev.CustomerEmail, ev.OrderID, ev.Amount)
+	if err := c.sender.Send(ctx, email.Message{
+		To:      ev.CustomerEmail,
+		OrderID: ev.OrderID,
+		Amount:  ev.Amount,
+	}); err != nil {
+		return fmt.Errorf("email send failed: %w", err)
+	}
 
 	if err := c.store.MarkProcessed(ctx, ev.EventID); err != nil {
 		return err

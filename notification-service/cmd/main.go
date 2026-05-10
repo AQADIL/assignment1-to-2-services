@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	natsdelivery "notification-service/internal/delivery/nats"
+	"notification-service/internal/email"
 	"notification-service/internal/repository"
 )
 
@@ -55,9 +56,25 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	var sender email.Sender
+	switch getenv("PROVIDER_MODE", "SIMULATED") {
+	case "SMTP":
+		sender = email.NewSMTPProvider(email.SMTPConfig{
+			Host:     getenv("SMTP_HOST", "localhost"),
+			Port:     getenv("SMTP_PORT", "25"),
+			Username: getenv("SMTP_USER", ""),
+			Password: getenv("SMTP_PASS", ""),
+			From:     getenv("SMTP_FROM", "noreply@example.com"),
+		})
+		logger.Info("email provider: SMTP")
+	default:
+		sender = email.NewMockProvider()
+		logger.Info("email provider: SIMULATED (MockProvider)")
+	}
+
 	logger.Info("notification-service starting", "nats_url", natsURL, "db_path", dbPath)
 
-	consumer := natsdelivery.NewConsumer(js, repo, "payments.completed.dlq")
+	consumer := natsdelivery.NewConsumer(js, repo, sender, "payments.completed.dlq")
 	if err := consumer.Start(ctx, "payments.completed", "notification"); err != nil {
 		logger.Error("failed to start consumer", "err", err)
 		os.Exit(1)
